@@ -1,0 +1,521 @@
+---
+title: "Sedentary Analysis"
+author: "Bianca Gonzalez"
+date: "July 26, 2016"
+output: html_document
+runtime: shiny
+---
+
+```{r}
+library("knitr")    
+library("rsconnect")
+library("shiny")
+library("ggplot2")
+library("SSN")
+library("RSQLite")
+library("DBI")
+library("dplyr")
+library("rgdal")
+library("sp")
+getwd()
+setwd("/Users/BiancaGonzalez/shiny")
+```
+
+library("knitr")    
+  This package will run each chunk of R code in the document and append the results of the code to the document next to the code chunk, saves time dont have to load plots again with diff info
+It is included in the RStudio IDE. 
+
+params:
+  ssnSed: "lsn_sed"
+```{r}
+rsconnect::setAccountInfo(name='biancagonzalez', token='13AE13CB8C2C3CB0C2C26C99D8EED595',
+                          secret='QErtxSBZlfPAp+UPNO9hk2h6wRNqE1vHj92+5DJI')
+rsconnect::deployApp('~/SedentaryAnalysis.Rmd')
+```
+/Users/BiancaGonzalez/Desktop/SedentaryLSN
+Set working paths 
+
+Import spatial stream network with relative paths
+```{r}
+ssnSed <- importSSN("~/lsn_sed.ssn",
+                    predpts = "predpts_diox_sed", o.write = FALSE)
+```
+
+
+look at what's contained inside
+```{r}
+#str(ssnSed) 
+#long output
+```
+
+Dealing with an s4 object. Let's access our data and confirm information downloaded correctly, 
+Looking at Mean of Dioxin Incidences. 
+```{r}
+names(ssnSed)
+arrange(ssnSed@obspoints@SSNPoints[[1]]@point.data, desc(Mean))
+```
+
+Replacing an outlier. Number did not convert to picograms according to decimal place, convert manually. Check to see if fixed.
+```{r}
+ssnSed@obspoints@SSNPoints[[1]]@point.data <- 
+  ssnSed@obspoints@SSNPoints[[1]]@point.data %>%
+  mutate(Mean=replace(Mean, COMID== 5204134, 4.27450))
+
+meanofValues <- ssnSed@obspoints@SSNPoints[[1]]@point.data$Mean
+max(meanofValues)
+min(meanofValues)
+median(meanofValues)
+```
+
+To access values inside of column, have to dig into slots. S4 objects are used for 
+object oriented programming, explained further here: http://adv-r.had.co.nz/S4.html
+
+```{r}
+ ssnSed@obspoints@SSNPoints[[1]]@point.data
+ max(ssnSed@obspoints@SSNPoints[[1]]@point.data$clay_pct)
+ min(ssnSed@obspoints@SSNPoints[[1]]@point.data$re)
+```
+
+
+Create distance matrix among observed data points, will calculate the distances 
+between observed points and prediction points for block kirging prediction later.
+and for model fitting. These models require a symmetric matrix network (distances between all pairs of observed points) to generate a general linear regression model (pg 13)
+```{r}
+ createDistMat(ssnSed, predpts = "predpts_diox_sed", o.write = TRUE, 
+              amongpreds = TRUE)
+```
+
+Arguments for createDistMat function
+AMONGPREDPS argument (pg14): 
+a matrix of downstream distances between pairs of prediction points, amongpreds = TRUE 
+OWRITE argument:
+Input o.write determines whether the specified matrices will be recalculated if they
+already exist, with the default behaviour retaining existing computations. 
+
+access matrix just created:  
+```{r}
+distObs <- getStreamDistMat(ssnSed)
+```
+
+Output shows several distances, with the first one being the distance to observations.
+
+```{r}
+str(distObs)
+```
+
+Total instream distance calculated by taking the asymmetric matrix plus its transpose.(page 14)
+(tranpose = reflection of a matrix over a diagnol line to retain values)
+```{r}
+ssnDistNet <- distObs$dist.net26 + t(distObs$dist.net26)
+```
+
+-View the tranpose result that holds instream dist-
+```{r}
+ssnDistNet[5:10,5:10]
+```
+
+Get matrice from obs to preds.
+-stream distance matrix-
+```{r}
+ssnMatrix <- getStreamDistMat(ssnSed, Name = "predpts_diox_sed")
+str(ssnMatrix)
+```
+
+Distance between observed sites and prediction sites (pg14-15) “.a” indicates from prediction sites to observation sites, and the label “.b” indicates from observation sites to predictions sites.
+-Matrix constuction-
+```{r}
+distsites_pred <- getStreamDistMat(ssnSed, Name = "predpts_diox_sed")
+str(distsites_pred)
+distsites_pred$dist.net1[1:5,1:5]
+```
+
+Finding years dioxin is highest, plot mean against date_year
+```{r}
+plot(ssnSed@obspoints@SSNPoints[[1]]@point.data$Mean,
+     ssnSed@obspoints@SSNPoints[[1]]@point.data$DateYear)
+max(ssnSed@obspoints@SSNPoints[[1]]@point.data$Mean)
+```
+
+-A first little plot!-
+```{r, echo=TRUE}
+plot(ssnSed, lwdLineCol = "afvArea", lwdLineEx = 10, lineCol = "blue",
+     pch = 19, xlab = "x-coordinate (m)", ylab = "y-coordinate (m)",
+     asp = 1)
+getwd()
+```
+
+-Visualize entire stream network of NorthEast Hydrology Unit 01 Medium Res-
+```{r}
+plot(as.SpatialLines(ssnSed), col = "blue", xlab = "x-coordinate", ylab = "y-coordinate")
+```
+
+-Plot of Dioxin concentration for sedentary fish-
+```{r}
+diox <- plot(ssnSed, "Mean", lwdLineCol = "afvArea",
+             lwdLineEx = 5, lineCol = "black", xlab = "x-coordinate" ,
+             ylab = "y-coordinate", asp=1, main = "Dioxin Concentration for Sedentary Species in Maine" )
+```
+
+The Torgegram computes average squared-differences like an empirical semivariogram, 
+except that it is based on stream distance with the semivariance plotted separately for flow-connected and flow-unconnected pairs (page18-20). 
+
+-Torgergam Plot-
+```{r}
+ssnSed.Torg <- Torgegram(ssnSed, "Mean", nlag = 100, maxlag = 100000)
+plot(ssnSed.Torg)
+```
+Here we see Spatial Autocorrelation isn't present in the collected dioxin data. This suggests covariates will likely be unable to predict the voltality of the location of dioxin in the stream network. 
+
+-Test for Total Waste into Stream-
+```{r}
+ssnSed.glmssn0 <- glmssn(Mean ~ Total_Wast, ssnSed,
+                            CorModels = NULL, use.nugget = TRUE)
+summary(ssnSed.glmssn0) 
+```
+The total waste reported into the stream on the stream line of recorded dioxin, is not a significant covariate, and does not account for the variance with an rsq of 0.00033557.
+Will not use total waste discharge as a covariate. 
+
+-Test for Clay Percentage in Riparian Zone-
+```{r}
+ssnSed.glmssn1 <- glmssn(Mean ~ clay_pct, ssnSed,
+                         CorModels = NULL, use.nugget = TRUE)
+summary(ssnSed.glmssn1) 
+
+summary(lm(Mean ~ clay_pct, getSSNdata.frame(ssnSed)))
+```
+Generalized R-squared for : 0.05601, significance by .01. Because results are significant, keep the clay percentage covariate. Accounts for about 6% of the variance in the model
+Adjusted R-squared:  0.04743; significance by .01
+
+From the results above, it can be interpolated the linear regression does not account
+for as much of the variance in the model when correlated with the percentage of clay at the dioxin recorded locations. It is has increase of about 1 point value (4.7% to 5.6%) in accuracy when the stream network general linear model is used versus the traditional linear regression methods. 
+
+Here we will use basic models to eliminate covariates that do not account for variance or are not associated with dioxin levels at a signifcant level. 
+
+-Test for DateYear-
+```{r}
+ssnSed.glmssn3 <- glmssn(Mean ~ DateYear, ssnSed,
+                         CorModels = NULL, use.nugget = TRUE)
+summary(ssnSed.glmssn3) 
+```
+Generalized R-squared: 0.3209713, significance level at .001 ***
+Keep DateYear based on results. A correlation was expected, seeing as the DateYear variable describes the Year the Dioxin was collected. Looking at a histogram, 
+it is evident higher spikes in dioxin concnetration exist throughout the years.
+
+Plot showing highest means tend to happen after 2007
+```{r}
+ggplot(ssnSed@obspoints@SSNPoints[[1]]@point.data, aes(Mean)) +
+  ggtitle("Dioxin Concentrations in 10 Year Span '03 -13 ") +
+  geom_point(colour = "black", aes(y = DateYear, 
+                                   colour = "DateYear"))
+```
+Regulations tightened in early 2000s. and most occurances of higher dioxin recordings are after 2007. from 
+- 2004-2007 highest val=4
+- 2007 spike over 25. 
+- 2010 spike over 25. 
+
+-Test for Reporting Year of Dioxin Spills-
+```{r}
+ssnSed.glmssn03 <- glmssn(Mean ~ Reporting_, ssnSed,
+                         CorModels = NULL, use.nugget = TRUE)
+summary(ssnSed.glmssn03)
+```
+Generalized R-squared: 0.02872705, Significance at .1. Will keep this for the model, but will not use it to predict results. 
+
+
+- Test the distance from outlet to the observed site of dioxin - 
+used to calculate flow-connected and flow-unconnected hydrologic distance measures in R
+```{r}
+ssnSed.glmssn5 <- glmssn(Mean ~ upDist, ssnSed,
+                         CorModels = NULL, use.nugget = TRUE)
+summary(ssnSed.glmssn5) 
+```
+Updist, R-squared: 0.033748 with Significance at .05
+
+From our results, significant covariates are the year dioxin was recorded (DateYear, r2 = 0.32), the distance from outlets to sites (upDist, r2 = 0.035), the reporting year of dioxin spills (Reporting, r2 = .028), and the clay percentage in riparian zones (clay_pct, r2 = 0.056). So in the general linear model for stream network data can be tested using these covariates. 
+
+-Test Clay here-
+```{r}
+ssnSed.glmssnClay <- glmssn(Mean ~ clay_pct, ssnSed,
+                        CorModels = c("Exponential.tailup", "Exponential.taildown"
+                        ), addfunccol = "afvArea")
+
+summary(ssnSed.glmssnUpClay)
+```
+Results show the Generalized R-squared is 0.0477366. 
+
+
+- Test Clay and UpDist here - 
+```{r}
+ssnSed.glmssnUpClay <- glmssn(Mean ~ clay_pct + upDist, ssnSed,
+                        CorModels = c("Exponential.tailup", "Exponential.taildown"
+                        ), addfunccol = "afvArea")
+
+summary(ssnSed.glmssnUpClay)
+```
+UpDist is no longer significant when tested with tailup and taildown models, designed specifically for stream networks, lets move onto DateYear. 
+```{r}
+ssnSed.glmssnClayDate <- glmssn(Mean ~ clay_pct + DateYear, ssnSed,
+                        CorModels = c("Exponential.tailup", "Exponential.taildown"
+                        ), addfunccol = "afvArea")
+
+summary(ssnSed.glmssnClayDate)
+```
+Generalized R-squared: 0.3548289
+
+Let's try adding Reporting Year of dioxin. 
+```{r}
+ssnSed.glmssnClayDateR <- glmssn(Mean ~ clay_pct + Reporting_ + DateYear, ssnSed,
+                        CorModels = c("Exponential.tailup", "Exponential.taildown"
+                        ), addfunccol = "afvArea")
+
+summary(ssnSed.glmssnClayDateR)
+```
+Generalized R-squared: 0.3812777. The taildown model accounts for much of the variance,
+- Exponential.taildown range 131113.976296
+- Exponential.tailup range  85215.462801
+So we know to include tailup and taildown in model
+
+Using Clay % model because this is the only covariate in the predictor table.
+DateYear does not exist in the predictor table b/c no data is recorded for the year dioxin fish data was recorded at the point in the network. 
+```{r}
+ssnSed.resid1 <- residuals(ssnSed.glmssnClayDateR)
+plot(ssnSed.resid1)
+par(mfrow = c(1, 2))
+hist(ssnSed.resid1) 
+hist(ssnSed, "Mean")
+```
+
+To increase accuracy in our model, we can treat outlier values of dioxin concentration as NA. This is a way to manipulate the date to increase accuracy of prediction, ignoring voltality in data. Residuals: The difference between the observed value (y) and the predicted value (ŷ) is called the residual. Generally want lower residuals
+
+-Put our residuals here
+```{r}
+ObsDFr <- getSSNdata.frame(ssnSed.resid1)
+```
+
+-Put our Dataframe here for manipulation
+```{r}
+ObsDF <- getSSNdata.frame(ssnSed)
+```
+
+-Put outliers into this dataframe
+```{r}
+indOutlier <- ObsDFr["_resid_"] < -3 | ObsDFr["_resid_"] > 3
+indOutlier
+```
+
+Set them equal to NA in this copy of SSN if >3 or <-3
+```{r}
+ObsDF[indOutlier, "Mean"] <- NA
+ObsDF
+```
+
+Rename dataframe and reinsert NA vals
+Put takes args column just maniupulated and original dataframe
+```{r}
+ssnSedr <- putSSNdata.frame(ObsDF, ssnSed)
+```
+
+Refit the basic spatial model to the mean
+```{r}
+ssnSedr.clay <- glmssn(Mean ~ clay_pct, ssnSedr,
+                         CorModels = c("Exponential.tailup",
+                                       "Exponential.taildown"), addfunccol = "afvArea",
+                         EstMeth = "ML")
+summary(ssnSedr.clay)
+```
+Generalized R-squared: 0.08559533, Tailup model accounting for most, taildown also accounts. 
+
+With DateYear incorporated, but cannot use for prediction points right now
+```{r}
+ssnSedr.glmssn1 <- glmssn(Mean ~ DateYear + clay_pct, ssnSedr,
+                         CorModels = c("Exponential.tailup",
+                                       "Exponential.Euclid"), addfunccol = "afvArea",
+                         EstMeth = "ML")
+summary(ssnSedr.glmssn1)
+```
+
+Leave-one-out cross validation (LOOCV) provides diagnostic for evaluating model
+performance. (p. 29). 
+The function CrossValidationStatsSSN both computes/summarises cross-validation
+statistics for a particular glmssn object (29)
+```{r}
+cv.out <- CrossValidationSSN(ssnSedr.glmssn1)
+```
+Add a straight lines through the current plot with line
+```{r}
+par(mfrow = c(1, 2))
+plot(ssnSedr.glmssn1$sampinfo$z,
+     cv.out[, "cv.pred"], pch = 19,
+     xlab = "Observed Data", ylab = "LOOCV Prediction", main = "Leave-one-out cross validation predictions (left)")
+abline(0, 1)
+plot( na.omit( getSSNdata.frame(ssnSedr)[, "Mean"]),
+      cv.out[, "cv.se"], pch = 19,
+      xlab = "Observed Data", ylab = "LOOCV Prediction SE", main = "and prediction standard
+      errors (right")
+
+```
+Results aboce indicate most of the variance is fitted along the line with this model. 
+
+Root-mean-squared prediction error, and confidence interval coverage are computeds. 
+The GR2 function computes a generalised R-squared for the fitted glmssn object (page29)
+```{r}
+CrossValidationStatsSSN(ssnSedr.glmssn1)
+GR2(ssnSedr.glmssn1)
+```
+
+AIC is a modeling fitting function. Lower Vals, higher accuracy. Numbers are relative to models being tested. 
+```{r}
+AIC(ssnSedr.glmssn1)
+AIC(ssnSedr.clay)
+```
+Results indicate our model using DateYear and Clay has a better fit, so we will test this model with different regression models for stream network correlations below: (taildown, tailup, euclidean dist.)
+
+Try other dist model structures for clay cat estimation. 
+```{r}
+ssnSedr.glmssn19 <- glmssn(Mean ~ clay_pct + DateYear, ssnSedr,
+                          CorModels = c("Exponential.tailup", "Exponential.taildown"),
+                          addfunccol = "afvArea", EstMeth = "ML")
+ssnSedr.glmssn18 <- glmssn(Mean ~ clay_pct + DateYear, ssnSedr,
+                          CorModels = c("LinearSill.tailup", "Mariah.taildown"),
+                          addfunccol = "afvArea",  EstMeth = "ML")
+ssnSedr.glmssn17 <- glmssn(Mean ~ clay_pct + DateYear, ssnSedr,
+                         CorModels = c("Mariah.tailup", "LinearSill.taildown"),
+                         addfunccol = "afvArea",  EstMeth = "ML")
+ssnSedr.glmssn16 <- glmssn(Mean ~ clay_pct + DateYear, ssnSedr,
+                         CorModels = c("Spherical.tailup", "Spherical.taildown"),
+                         addfunccol = "afvArea",  EstMeth = "ML")
+ssnSedr.glmssn15 <- glmssn(Mean ~ clay_pct + DateYear, ssnSedr,
+                         CorModels = "Exponential.Euclid",
+                         addfunccol = "afvArea",  EstMeth = "ML")
+ssnSedr.glmssn14 <- glmssn(Mean ~ clay_pct + DateYear, ssnSedr,
+                         CorModels = c("Exponential.tailup"),
+                         addfunccol = "afvArea", EstMeth = "ML")
+```
+
+Spatial models can be compared using the InfoCritCompare command (page31)
+extracts the AIC from each model fit and evaluates the cross validation 
+statistics for each model
+```{r}
+options(digits = 5)
+InfoCritCompare(list(ssnSedr.glmssn19, ssnSedr.glmssn18,
+                     ssnSedr.glmssn17, ssnSedr.glmssn16, ssnSedr.glmssn15, ssnSedr.glmssn14))
+
+summary(ssnSedr.glmssn14)
+```
+Generalized R-squared: 0.832, Exponential.tailup     range 366911.596, 1e-05 ***, <2e-16 ***
+Here we can see the model with most influence over variance, is the tail-up model. Tail-up models restrict autocorrelation to only flow connected points, unlike tail-down models that allow for flow-unconnected autocorrelation. Flow connected tailup models hence allow the correlation models to only be tested if the stream is going in a downstream direction. Tail-up models are constructed using moving averages going upstream, see Ver Hoef, Isaak et al 2014. 
+http://www.fs.fed.us/rm/boise/AWAE/projects/SSN_STARS/downloads/SSN/SSNvignette2014.pdf 
+
+"Flow-connected relationships may be useful for stream attributes characterized by passive downstream diffusion such as water chemistry, sediment, or temperature." (Isaak, et al 2014). 
+
+
+Now that we have found what predictors have the greatest influence on the dioxin data, we can move onto predicting the dioxin level in water levels in streams using only clay as a covariate.
+
+Identify local outliers and delete them from model for prediction
+```{r}
+ssnSedr.resid14.cv.std <- residuals(ssnSedr.clay,
+                           cross.validation = TRUE)
+ssnSedr.resid14.cv.std 
+  getSSNdata.frame(ssnSedr.resid14)[, "_resid.crossv_"] /
+  getSSNdata.frame(ssnSedr.resid14)[, "_CrossValStdErr_"]
+hist(ssnSedr.resid14.cv.std)
+```
+
+Predict the sites using the prediction function from SSN package. 
+```{r}
+ssnSedr.sites_pred <- predict(ssnSedr.clay, "predpts_diox_sed")
+```
+
+Plot our results of the predictions: Color range difficult to distinguish, but values are between .43 and 6.03 (kirging useful for NA)
+```{r}
+plot(ssnSedr.sites_pred, SEcex.max = 1, SEcex.min = 1,
+     breaktype = "user", brks = diox)
+```
+
+Plot showing the real mean of recorded dioxin concentrations.
+```{r}
+plot(ssnSedr, "Mean", pch = 1, cex = 4,
+     xlab = "x-coordinate", ylab = "y-coordinate")
+```
+
+Here are two plots showing the mean of dioxin plotted with the predicted values.
+We can zoom in to see the variation in prediction, and use the guiding actual values to visually confirm predicted values. 
+```{r}
+plot(ssnSedr, "Mean", pch = 3, cex = 5,
+     xlab = "x-coordinate", ylab = "y-coordinate", 
+     xlim = c(2100000,2200000), ylim = c(2640000,2800000), main = 
+       "Predicting Dioxin Levels based on Current Levels")
+
+plot(ssnSedr.sites_pred, add = TRUE,
+     xlim = c(2100000,2200000), ylim = c(2640000,2800000))
+```
+
+Block (kirging) prediction is used over set of stream segments
+```{r}
+ssnSedr.clay.BPKnapp <- BlockPredict(ssnSedr.clay, "predpts_diox_sed")
+ssnSedr.clay.BPKnapp
+```
+
+When we took values from residuals not between range -3 and 3, we filled them with NA values.
+
+"When fitting a model with glmssn, records with NA response values are used to create a new
+prediction data set, called _MissingObs_, in the fitted glmssn object. _MissingObs_ is like
+any other prediction data set and can be used to predict the NAs. We compare the original
+outlier value with this prediction" (page 36)
+```{r}
+ssnSedr.missingobs <- predict(ssnSedr.clay, "_MissingObs_")
+getPreds(ssnSedr.missingobs, pred.type = "pred")
+```
+Except for 7 values, we cann see all prediction points are within 1 picogram of the predicted values (40 predicted means). 
+
+Results indicate in our general linear regression model using the two following covarites: year dioxin data in sedentary fish was recorded and clay percentage in the riparian zone, shows we can account for about 83% of the variance in the model (r-squared = .83). When predicting values of dioxin in the stream networks of maine based on covariates, several covariates had to be exluded from the model, including the most significant covariate that accounted for the variance, year dioxin was collected, because data was not available for prediction points in the network, seeing as they were not in the same location as prediction points. The model used to predict values in the network were 
+
+
+
+
+
+This demonstrates how a standard R plot can be made interactive by wrapping it in the Shiny `renderPlot` function. The `selectInput` and `sliderInput` functions create the input widgets used to drive the plot.
+
+```{r, echo=FALSE}
+inputPanel(
+  selectInput("n_breaks", label = "Number of bins:",
+              choices = c(10, 20, 35, 50), selected = 20),
+  
+  sliderInput("bw_adjust", label = "Bandwidth adjustment:",
+              min = 0.2, max = 2, value = 1, step = 0.2)
+)
+
+renderPlot({
+  hist(faithful$eruptions, probability = TRUE, breaks = as.numeric(input$n_breaks),
+       xlab = "Duration (minutes)", main = "Geyser eruption duration")
+  
+  dens <- density(faithful$eruptions, adjust = input$bw_adjust)
+  lines(dens, col = "blue")
+})
+```
+
+## Embedded Application
+Put your dataset in a subdirectory of your shiny app directory (and change you code accordingly). Be sure to make the path to the data a relative path (not an absolute path - this generates a warning) 
+
+It's also possible to embed an entire Shiny application within an R Markdown document using the `shinyAppDir` function. This example embeds a Shiny application located in another directory:
+
+```{r, echo=FALSE}
+shinyAppDir(
+  system.file("/Users/BiancaGonzalez", package="shiny"),
+  options=list(
+    width="100%", height=550
+  )
+)
+```
+
+Note the use of the `height` parameter to determine how much vertical space the embedded application should occupy.
+
+You can also use the `shinyApp` function to define an application inline rather then in an external directory.
+
+In all of R code chunks above the `echo = FALSE` attribute is used. This is to prevent the R code within the chunk from rendering in the document with plots. 
+
+Meanwhile can continue documenting the process for manual editing into NSI and what this requires of the hydrological network. So set up my point analysis, still have my research here. 
+
+Makes sense as to why the total waste into stream does not correlate because the RSEI scores of points within fifteen kilometers is 0. https://www.epa.gov/rsei/about-risk-screening-environmental-indicators-rsei-model#answer 
+  
+
